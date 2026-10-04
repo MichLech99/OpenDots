@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && mkdir -p /data && chown node:node /data
 COPY --from=build /app/dist ./dist
-USER node
+COPY railway-entrypoint.mjs ./railway-entrypoint.mjs
 EXPOSE 4310
-CMD ["node", "dist/server/server/index.js"]
+CMD ["node", "railway-entrypoint.mjs"]
 
