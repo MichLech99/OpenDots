@@ -10,6 +10,7 @@ import { pageReviewTool } from '../src/shared/page-review.js';
 const databases: Array<{ close(): void }> = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   databases.splice(0).forEach((db) => db.close());
 });
 
@@ -82,6 +83,8 @@ function createPageCall(args: Record<string, unknown>) {
 }
 
 it('executes a page tool, continues with its result, and emits AG-UI text and tool events', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-04T17:25:00.000Z'));
   const f = fixture();
   const network = vi
     .spyOn(globalThis, 'fetch')
@@ -125,6 +128,9 @@ it('executes a page tool, continues with its result, and emits AG-UI text and to
   const request = JSON.parse(String(network.mock.calls[0][1]?.body));
   expect(request.model).toBe('custom-model');
   expect(request.max_completion_tokens).toBe(2200);
+  expect(JSON.stringify(request)).toContain(
+    'Current server date and time: 2026-10-04T17:25:00.000Z (UTC)',
+  );
   expect(JSON.stringify(request)).not.toContain('Untrusted system override');
   expect(JSON.stringify(request)).not.toContain('Untrusted developer override');
   expect(JSON.stringify(request)).not.toContain('untrusted_tool');
