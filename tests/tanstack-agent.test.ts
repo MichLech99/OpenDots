@@ -13,7 +13,10 @@ afterEach(() => {
   databases.splice(0).forEach((db) => db.close());
 });
 
-function fixture() {
+function fixture(
+  model = 'custom-model',
+  baseUrl = 'https://unused.invalid/v1',
+) {
   const store = new Store(':memory:');
   const workspace = new WorkspaceStore(':memory:', 'owner');
   databases.push(store, workspace);
@@ -25,8 +28,8 @@ function fixture() {
     {
       intelligenceKey: 'fixture',
       apiKey: 'fixture',
-      model: 'custom-model',
-      baseUrl: 'https://unused.invalid/v1',
+      model,
+      baseUrl,
       runtimeUrl: '',
       voiceName: 'marin',
       slackUsers: [],
@@ -248,4 +251,131 @@ it('aborts the TanStack provider request when the owner pauses work', async () =
   f.store.updateSettings({ paused: true });
   await finished;
   expect(signal.aborted).toBe(true);
+});
+
+function responseStream(events: Array<Record<string, unknown>>) {
+  return new Response(
+    events
+      .map(
+        (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      )
+      .join(''),
+    { headers: { 'content-type': 'text/event-stream' } },
+  );
+}
+
+it('uses Responses for GPT-6, executes a page tool, and replays reasoning on continuation', async () => {
+  const f = fixture('gpt-6-luna', 'https://api.openai.com/v1');
+  const reasoning = {
+    type: 'reasoning',
+    id: 'rs_fixture',
+    summary: [],
+    encrypted_content: 'fixture-reasoning',
+  };
+  const tool = {
+    type: 'function_call',
+    id: 'fc_fixture',
+    call_id: 'create-page',
+    name: 'create_space_page',
+    arguments: JSON.stringify({ title: 'Notes', content: '# Notes' }),
+    status: 'completed',
+  };
+  const network = vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(
+      responseStream([
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: reasoning,
+        },
+        { type: 'response.output_item.done', output_index: 0, item: reasoning },
+        {
+          type: 'response.output_item.added',
+          output_index: 1,
+          item: { ...tool, arguments: '' },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          item_id: tool.id,
+          delta: tool.arguments,
+        },
+        {
+          type: 'response.function_call_arguments.done',
+          output_index: 1,
+          item_id: tool.id,
+          arguments: tool.arguments,
+        },
+        { type: 'response.output_item.done', output_index: 1, item: tool },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_fixture',
+            model: 'gpt-6-luna',
+            status: 'completed',
+            output: [reasoning, tool],
+          },
+        },
+      ]),
+    )
+    .mockResolvedValueOnce(
+      responseStream([
+        {
+          type: 'response.output_text.delta',
+          item_id: 'msg_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta: 'Created Notes.',
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_final',
+            model: 'gpt-6-luna',
+            status: 'completed',
+            output: [],
+          },
+        },
+      ]),
+    );
+  const events = await lastValueFrom(f.agent.run(f.input).pipe(toArray()));
+  expect(f.workspace.pages.list(f.dot.spaceId)).toEqual(
+    expect.arrayContaining([expect.objectContaining({ title: 'Notes' })]),
+  );
+  expect(network).toHaveBeenCalledTimes(2);
+  expect(String(network.mock.calls[0][0])).toBe(
+    'https://api.openai.com/v1/responses',
+  );
+  const request = JSON.parse(String(network.mock.calls[0][1]?.body));
+  expect(request.reasoning).toEqual({ effort: 'low' });
+  expect(request.max_output_tokens).toBe(8000);
+  expect(request.max_completion_tokens).toBeUndefined();
+  expect(request.include).toContain('reasoning.encrypted_content');
+  expect(request.store).toBe(false);
+  const continuation = JSON.parse(String(network.mock.calls[1][1]?.body));
+  expect(continuation.input).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'function_call_output',
+        call_id: 'create-page',
+        output: expect.stringContaining('Notes'),
+      }),
+      expect.objectContaining({
+        type: 'reasoning',
+        encrypted_content: 'fixture-reasoning',
+      }),
+    ]),
+  );
+  expect(events.some((event) => event.type === EventType.RUN_ERROR)).toBe(
+    false,
+  );
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: EventType.TEXT_MESSAGE_CHUNK,
+        delta: 'Created Notes.',
+      }),
+    ]),
+  );
 });

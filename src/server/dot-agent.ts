@@ -251,10 +251,14 @@ export class DotAgent extends AbstractAgent {
           initialSettings.memoryAllowed && dot.memoryAllowed
             ? this.store.memories().map((memory) => memory.text)
             : [];
+        const baseURL = this.config.baseUrl ?? 'https://api.openai.com/v1';
+        const usesResponses =
+          new URL(baseURL).hostname === 'api.openai.com' &&
+          this.config.model.startsWith('gpt-6');
         const adapter = openaiCompatibleText(this.config.model, {
           apiKey: this.config.apiKey,
-          baseURL: this.config.baseUrl ?? 'https://api.openai.com/v1',
-          api: 'chat-completions',
+          baseURL,
+          api: usesResponses ? 'responses' : 'chat-completions',
           maxRetries: 1,
         });
         const serverTools = [
@@ -298,7 +302,14 @@ export class DotAgent extends AbstractAgent {
               abortController: ctx.abortController,
               threadId: ctx.input.threadId,
               runId: ctx.input.runId,
-              modelOptions: { max_completion_tokens: 2200 },
+              modelOptions: usesResponses
+                ? {
+                    max_output_tokens: 8000,
+                    reasoning: { effort: 'low' },
+                    include: ['reasoning.encrypted_content'],
+                    store: false,
+                  }
+                : { max_completion_tokens: 2200 },
               agentLoopStrategy: maxIterations(
                 dot.skillDeliveryEnabled && conversation.learningContainerId
                   ? 10
